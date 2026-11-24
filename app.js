@@ -17,6 +17,8 @@ $("heroInvite").onclick = () => showModal("participantModal");
 $("adminOpen").onclick = () => showModal("adminModal");
 $("participantForm").addEventListener("submit", participantLogin);
 $("adminForm").addEventListener("submit", adminLogin);
+$("forgotPassword").addEventListener("click", requestPasswordReset);
+$("passwordResetForm").addEventListener("submit", saveNewPassword);
 $("eventForm").addEventListener("submit", saveEvent);
 $("addParticipantForm").addEventListener("submit", addParticipant);
 $("drawButton").addEventListener("click", drawSecret);
@@ -30,6 +32,33 @@ function requireConfig(target) {
   return true;
 }
 function callOptions(token = participantToken) { return { body: { token, family_id: FAMILY_ID } }; }
+
+if (client) {
+  client.auth.onAuthStateChange((event) => {
+    if (event === "PASSWORD_RECOVERY") showModal("passwordResetModal");
+  });
+}
+
+async function requestPasswordReset() {
+  if (!requireConfig("adminNotice")) return;
+  const email = $("adminEmail").value.trim();
+  if (!email) { $("adminNotice").textContent = "Digite seu e-mail acima para receber o link."; $("adminEmail").focus(); return; }
+  const redirectTo = `${window.location.origin}${window.location.pathname}`;
+  const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo });
+  $("adminNotice").textContent = error ? `Não foi possível enviar o link: ${error.message}` : "Enviamos um link para seu e-mail. Abra-o neste mesmo endereço para criar a nova senha.";
+}
+
+async function saveNewPassword(event) {
+  event.preventDefault();
+  const password = $("newPassword").value;
+  if (password.length < 8) { $("passwordResetNotice").textContent = "Use pelo menos 8 caracteres."; return; }
+  if (password !== $("confirmPassword").value) { $("passwordResetNotice").textContent = "As senhas não coincidem."; return; }
+  const { error } = await client.auth.updateUser({ password });
+  if (error) { $("passwordResetNotice").textContent = `Não foi possível atualizar a senha: ${error.message}`; return; }
+  $("passwordResetForm").reset();
+  $("passwordResetNotice").textContent = "Senha atualizada. Agora você pode entrar no painel com a nova senha.";
+  setTimeout(() => hideModal($("passwordResetForm")), 1800);
+}
 
 async function participantLogin(event) {
   event.preventDefault();
@@ -182,7 +211,15 @@ async function saveEvent(event) {
 async function addParticipant(event) {
   event.preventDefault(); const name = $("newParticipantName").value.trim(); if (!name) return;
   const { data, error } = await client.functions.invoke("admin-create-participant", { body: { nome: name, family_id: FAMILY_ID } });
-  if (error || !data?.code) { $("dashboardNotice").textContent = data?.error || error?.message || "Não foi possível cadastrar."; return; }
+  if (error || !data?.code) {
+    let message = data?.error;
+    if (!message && error?.context && typeof error.context.json === "function") {
+      const response = error.context.clone ? error.context.clone() : error.context;
+      message = (await response.json().catch(() => null))?.error;
+    }
+    $("dashboardNotice").textContent = message || "Não foi possível cadastrar. Atualize a página e entre novamente no painel.";
+    return;
+  }
   $("generatedCode").textContent = data.code; showModal("newCodeModal"); $("newParticipantName").value = ""; await refreshDashboard();
 }
 
@@ -201,6 +238,11 @@ async function drawSecret() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   if (!client) return;
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  if (hashParams.get("error_code") === "otp_expired") {
+    showModal("adminModal");
+    $("adminNotice").textContent = "Esse link de recuperação expirou ou já foi usado. Peça outro link e abra-o antes de vencer.";
+  }
   const { data } = await client.auth.getSession();
   if (data.session) {
     const { data: adminCheck } = await client.from("admins").select("user_id").eq("user_id", data.session.user.id).maybeSingle();

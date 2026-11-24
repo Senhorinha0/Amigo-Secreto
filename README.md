@@ -51,6 +51,12 @@ Publique `index.html`, `app.js`, `styles.css` e `config.js` juntos em um host es
 
 No Vercel: crie um projeto novo, importe o repositório que contém esta pasta, escolha **Other** como framework, deixe o comando de build vazio, use `.` como diretório de saída e clique em **Deploy**. Inclua `config.js` junto com os arquivos; ele contém somente valores públicos.
 
+### Recuperar a senha do organizador
+
+O site agora reconhece o link de recuperação do Supabase e mostra o formulário para cadastrar e confirmar uma nova senha. Publique esta versão do site primeiro. No Supabase, abra **Authentication → URL Configuration** e configure a **Site URL** com o endereço publicado (por exemplo, `https://SEU-SITE.vercel.app`). Em **Redirect URLs**, inclua esse endereço e, se for testar localmente, o endereço exato do servidor local (por exemplo `http://127.0.0.1:5500/**`).
+
+Depois, abra o site publicado, clique em **Administrador**, digite o e-mail da conta e use **Esqueci minha senha**. Abra o link novo no mesmo site e informe a nova senha duas vezes. Links antigos ou expirados devem ser substituídos por um link novo. A página precisa estar publicada e acessível; `localhost:3000` só funciona quando há um servidor do projeto ativo nessa porta.
+
 Para desenvolvimento local, abra a pasta em VS Code e use Live Server (não abra o arquivo como `file://`).
 
 ## Banco de dados
