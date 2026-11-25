@@ -96,3 +96,17 @@ where nome = 'Família Senhorinha'
 O painel usa a sessão Supabase Auth do organizador. Antes de usar com dados reais, cadastre o usuário em `public.admins`, aplique o schema/migração, publique as funções e configure o envio de e-mail.
 
 Se a instalação usar outro projeto Supabase, depois de criar a família e o evento, consulte o UUID da família com `select id from public.familias where nome = 'Família Senhorinha';` e atualize a constante `FAMILY_ID` no início de `app.js`. `config.js` continua contendo apenas `url` e `anonKey`.
+
+
+## Acesso do participante
+
+Depois de validar o código uma vez, o site guarda a sessão neste navegador para continuar após fechar e reabrir a página. Por segurança, a sessão de acesso vence após 14 dias ou pode ser revogada; nesse caso, será necessário usar o código novamente. Não use computadores compartilhados para permanecer conectado.
+
+
+## Perfil e contagem de sorteios
+
+Após entrar, o perfil no canto superior direito mostra o nome do familiar e quantos sorteios participou. Para o organizador, mostra o nome da conta Auth (ou o início do e-mail, se não houver nome cadastrado) e quantos sorteios organizou. O botão de saída encerra a sessão ativa.
+
+Em uma instalação Supabase existente, execute supabase/profile-stats.sql no SQL Editor antes de publicar o frontend. Esse script adiciona contadores cumulativos: anular e refazer o sorteio conta como uma nova participação/execução. O backfill consegue contar resultados que ainda estão guardados no banco e eventos atualmente sorteados; execuções antigas já anuladas não podem ser recuperadas porque os pares anteriores foram apagados.
+
+Depois, publique novamente a Edge Function participant-me conforme os comandos acima e publique os arquivos do site. Em uma instalação nova, supabase/schema.sql já inclui os campos e gatilhos.

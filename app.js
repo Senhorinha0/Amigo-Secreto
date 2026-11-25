@@ -2,7 +2,12 @@ const CONFIG = window.APP_CONFIG || {};
 const FAMILY_ID = "0783120a-b902-4e55-878f-14dc8f108b38";
 const hasConfig = Boolean(CONFIG.url && CONFIG.anonKey && window.supabase);
 const client = hasConfig ? window.supabase.createClient(CONFIG.url, CONFIG.anonKey) : null;
-let participantToken = sessionStorage.getItem("participant_token") || null;
+// Keep participant access between browser visits. Migrate sessions created by older builds.
+let participantToken = localStorage.getItem("participant_token") || sessionStorage.getItem("participant_token") || null;
+if (participantToken) {
+  localStorage.setItem("participant_token", participantToken);
+  sessionStorage.removeItem("participant_token");
+}
 let currentParticipant = null;
 let activeEvent = null;
 let participantCache = [];
@@ -11,6 +16,18 @@ let participantReloading = false;
 let participantHasSecret = false;
 
 const $ = (id) => document.getElementById(id);
+function showAccountProfile(name, role, count) {
+  const displayName = String(name || "Participante").trim() || "Participante";
+  $("accountName").textContent = displayName;
+  $("accountAvatar").textContent = [...displayName][0]?.toLocaleUpperCase("pt-BR") || "?";
+  $("accountStats").textContent = `${role} · ${count}`;
+  $("accountProfile").hidden = false;
+  $("topActions").hidden = true;
+}
+function hideAccountProfile() {
+  $("accountProfile").hidden = true;
+  $("topActions").hidden = false;
+}
 function showModal(id) { $(id).classList.add("active"); $(id).setAttribute("aria-hidden", "false"); }
 function hideModal(el) { const modal = el.closest(".modal-backdrop"); if (modal) { modal.classList.remove("active"); modal.setAttribute("aria-hidden", "true"); } }
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => hideModal(button)));
@@ -28,6 +45,7 @@ $("addParticipantForm").addEventListener("submit", addParticipant);
 $("drawButton").addEventListener("click", drawSecret);
 $("resetDrawButton").addEventListener("click", resetDraw);
 $("logout").addEventListener("click", logout);
+$("accountLogout").addEventListener("click", logout);
 $("addWishForm").addEventListener("submit", saveWish);
 $("profileForm").addEventListener("submit", saveParticipantProfile);
 $("editProfile").addEventListener("click", () => showModal("profileModal"));
@@ -77,7 +95,8 @@ async function participantLogin(event) {
     if (error) throw error;
     if (!data?.token) throw new Error(data?.error || "Código inválido.");
     participantToken = data.token;
-    sessionStorage.setItem("participant_token", participantToken);
+    localStorage.setItem("participant_token", participantToken);
+    sessionStorage.removeItem("participant_token");
     hideModal($("participantForm"));
     await loadParticipantArea();
   } catch (error) { $("participantNotice").textContent = error.message || "Não foi possível validar o código."; }
@@ -116,10 +135,13 @@ async function loadParticipantArea({ silent = false } = {}) {
   const { data, error } = result;
   if (error || !data) {
     if (silent) return;
-    sessionStorage.removeItem("participant_token"); participantToken = null; currentParticipant = null;
+    localStorage.removeItem("participant_token"); sessionStorage.removeItem("participant_token"); participantToken = null; currentParticipant = null;
+    hideAccountProfile();
     alert("Sua sessão expirou. Entre novamente."); return;
   }
   currentParticipant = data.participant;
+  const drawCount = Number(data.draw_count) || 0;
+  showAccountProfile(data.participant?.name, "Familiar", `Participou de ${drawCount} ${drawCount === 1 ? "sorteio" : "sorteios"}`);
   const profile = data.profile || {};
   $("clothingSize").value = profile.tamanho_roupa || "";
   $("shoeSize").value = profile.numero_calcado || "";
@@ -234,10 +256,26 @@ async function adminLogin(event) {
   if (error) { $("adminNotice").textContent = "E-mail ou senha inválidos."; return; }
   const { data: adminCheck, error: checkError } = await client.from("admins").select("user_id").eq("user_id", data.user.id).maybeSingle();
   if (checkError || !adminCheck) { await client.auth.signOut(); $("adminNotice").textContent = "Esta conta não está autorizada como administradora."; return; }
-  hideModal($("adminForm")); $("dashboard").hidden = false; $("dashboard").scrollIntoView({ behavior: "smooth" }); await refreshDashboard();
+  hideModal($("adminForm")); $("dashboard").hidden = false; $("dashboard").scrollIntoView({ behavior: "smooth" }); await refreshDashboard(); await showAdminProfile(data.user);
 }
 
-async function logout() { if (client) await client.auth.signOut(); $("dashboard").hidden = true; window.scrollTo({ top: 0, behavior: "smooth" }); }
+async function showAdminProfile(user) {
+  const metadata = user?.user_metadata || {};
+  const name = metadata.full_name || metadata.name || metadata.display_name || user?.email?.split("@")[0] || "Organizador";
+  const { data: events } = await client.from("sorteios").select("execucoes_sorteio").eq("familia_id", FAMILY_ID);
+  const total = (events || []).reduce((sum, event) => sum + Number(event.execucoes_sorteio || 0), 0);
+  showAccountProfile(name, "Organizador", `${total} ${total === 1 ? "sorteio organizado" : "sorteios organizados"}`);
+}
+
+async function logout() {
+  if (participantToken) {
+    localStorage.removeItem("participant_token"); sessionStorage.removeItem("participant_token");
+    participantToken = null; currentParticipant = null; participantHasSecret = false;
+    $("resultModal").classList.remove("active"); $("resultModal").setAttribute("aria-hidden", "true");
+  }
+  if (client) await client.auth.signOut();
+  $("dashboard").hidden = true; hideAccountProfile(); window.scrollTo({ top: 0, behavior: "smooth" });
+}
 
 async function refreshDashboard() {
   if (!client) return;
@@ -373,7 +411,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   const { data } = await client.auth.getSession();
   if (data.session) {
     const { data: adminCheck } = await client.from("admins").select("user_id").eq("user_id", data.session.user.id).maybeSingle();
-    if (adminCheck) { $("dashboard").hidden = false; await refreshDashboard(); } else await client.auth.signOut();
+    if (adminCheck) { $("dashboard").hidden = false; await refreshDashboard(); await showAdminProfile(data.session.user); } else await client.auth.signOut();
   }
   if (participantToken) await loadParticipantArea();
 });
