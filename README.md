@@ -13,6 +13,7 @@ Site estático em HTML, CSS e JavaScript, com Supabase Auth, Postgres e Edge Fun
 - No primeiro acesso com o código, a pessoa preenche esse perfil antes de continuar. O nome do amigo secreto fica escondido até o organizador realizar o sorteio; com a página aberta, o resultado é atualizado automaticamente.
 - O familiar pode solicitar um código pelo nome. O código é enviado ao e-mail do organizador para ele repassar; esse envio depende da configuração do Resend abaixo.
 - O painel permite configurar o evento, gerenciar participantes, definir restrições e sortear uma vez.
+- Depois de um sorteio, o organizador pode anulá-lo no painel. Isso apaga os pares e reabre o evento, preservando participantes, perfis e listas de presentes.
 
 ## Ativar o primeiro administrador
 
@@ -46,6 +47,7 @@ supabase functions deploy participant-profile --no-verify-jwt --project-ref kiep
 supabase functions deploy request-participant-code --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
 supabase functions deploy admin-create-participant --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
 supabase functions deploy admin-draw --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
+supabase functions deploy admin-reset-draw --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
 ```
 
 As funções usam as variáveis gerenciadas pelo Supabase (`SUPABASE_URL`, chaves públicas e `SUPABASE_SECRET_KEYS`). O `@supabase/server` cuida dos cabeçalhos e da autenticação. A checagem de administrador usa a sessão do usuário e a política RLS de `admins`; operações de servidor usam `ctx.supabaseAdmin`. Chaves secretas nunca são enviadas pelo navegador. Não adicione chaves secretas aos arquivos do site nem ao repositório.

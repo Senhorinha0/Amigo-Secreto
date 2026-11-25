@@ -26,6 +26,7 @@ $("passwordResetForm").addEventListener("submit", saveNewPassword);
 $("eventForm").addEventListener("submit", saveEvent);
 $("addParticipantForm").addEventListener("submit", addParticipant);
 $("drawButton").addEventListener("click", drawSecret);
+$("resetDrawButton").addEventListener("click", resetDraw);
 $("logout").addEventListener("click", logout);
 $("addWishForm").addEventListener("submit", saveWish);
 $("profileForm").addEventListener("submit", saveParticipantProfile);
@@ -251,6 +252,8 @@ async function refreshDashboard() {
     $("minValue").value = event.valor_minimo ?? 0; $("maxValue").value = event.valor_maximo ?? 100;
     $("statEvent").textContent = event.nome; $("eventRules").value = event.regras || "";
     $("drawButton").disabled = event.status !== "rascunho";
+    $("drawButton").hidden = event.status !== "rascunho";
+    $("resetDrawButton").hidden = event.status !== "sorteado";
   }
   const { data: people, error } = await client.from("participantes").select("id,nome,ultimo_acesso,created_at").eq("familia_id", familyId).order("nome");
   if (error) { $("dashboardNotice").textContent = "Não foi possível carregar participantes."; return; }
@@ -343,6 +346,21 @@ async function drawSecret() {
   $("dashboardNotice").textContent = "Realizando sorteio...";
   const { data, error } = await client.functions.invoke("admin-draw", { body: { family_id: FAMILY_ID } });
   $("dashboardNotice").textContent = error ? (data?.error || "Falha no sorteio.") : (data?.message || data?.error || "Sorteio concluído."); await refreshDashboard();
+}
+
+async function resetDraw() {
+  const confirmed = confirm("Anular o sorteio atual? Os pares serão apagados e os participantes deixarão de ver seus resultados. Os cadastros, perfis e listas de presentes serão mantidos. Depois você poderá sortear novamente.");
+  if (!confirmed) return;
+  $("dashboardNotice").textContent = "Anulando o sorteio...";
+  $("resetDrawButton").disabled = true;
+  const { data, error } = await client.functions.invoke("admin-reset-draw", { body: { family_id: FAMILY_ID } });
+  $("resetDrawButton").disabled = false;
+  if (error || data?.error) {
+    $("dashboardNotice").textContent = data?.error || "Não foi possível anular o sorteio.";
+    return;
+  }
+  $("dashboardNotice").textContent = data?.message || "Sorteio anulado. Você já pode sortear novamente.";
+  await refreshDashboard();
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
