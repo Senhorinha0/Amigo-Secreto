@@ -9,6 +9,9 @@ Site estático em HTML, CSS e JavaScript, com Supabase Auth, Postgres e Edge Fun
 - Os resultados, convites em hash, sessões e listas ficam inacessíveis diretamente pelo navegador. As Edge Functions usam a chave de serviço apenas no servidor.
 - A conta de administrador precisa estar registrada em `public.admins`; só estar autenticada não libera o painel.
 - Participantes conseguem criar, editar e remover suas sugestões antes do sorteio. A lista da pessoa sorteada aparece para quem a tirou.
+- Cada participante pode salvar tamanho de roupa, número do calçado, presentes desejados e, opcionalmente, itens que não quer ganhar. Depois do sorteio, esse perfil aparece somente para quem tirou a pessoa.
+- No primeiro acesso com o código, a pessoa preenche esse perfil antes de continuar. O nome do amigo secreto fica escondido até o organizador realizar o sorteio; com a página aberta, o resultado é atualizado automaticamente.
+- O familiar pode solicitar um código pelo nome. O código é enviado ao e-mail do organizador para ele repassar; esse envio depende da configuração do Resend abaixo.
 - O painel permite configurar o evento, gerenciar participantes, definir restrições e sortear uma vez.
 
 ## Ativar o primeiro administrador
@@ -33,17 +36,30 @@ supabase login
 supabase link --project-ref kiepppjaomqffxqwmxvk
 ```
 
-Publique as funções de acesso por código sem exigir JWT de usuário no gateway; elas validam seu token individual de sessão. As funções administrativas exigem JWT válido e também consultam `public.admins`:
+Todas as funções usam `@supabase/server` para verificar a autenticação dentro da função. Por isso, publique com `--no-verify-jwt`; as funções administrativas validam a sessão Auth e consultam `public.admins` sob a política RLS do próprio usuário antes de fazer qualquer operação privilegiada:
 
 ```sh
 supabase functions deploy participant-access --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
 supabase functions deploy participant-me --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
 supabase functions deploy participant-wishes --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
-supabase functions deploy admin-create-participant --project-ref kiepppjaomqffxqwmxvk --yes
-supabase functions deploy admin-draw --project-ref kiepppjaomqffxqwmxvk --yes
+supabase functions deploy participant-profile --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
+supabase functions deploy request-participant-code --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
+supabase functions deploy admin-create-participant --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
+supabase functions deploy admin-draw --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
 ```
 
-As funções usam as variáveis gerenciadas pelo Supabase (`SUPABASE_URL`, `SUPABASE_ANON_KEY` e `SUPABASE_SERVICE_ROLE_KEY`). Não adicione a chave de serviço aos arquivos do site nem ao repositório. O projeto Supabase já conectado recebeu o código dessas funções pelo conector Codex; use os comandos acima quando republicar após uma alteração.
+As funções usam as variáveis gerenciadas pelo Supabase (`SUPABASE_URL`, chaves públicas e `SUPABASE_SECRET_KEYS`). O `@supabase/server` cuida dos cabeçalhos e da autenticação. A checagem de administrador usa a sessão do usuário e a política RLS de `admins`; operações de servidor usam `ctx.supabaseAdmin`. Chaves secretas nunca são enviadas pelo navegador. Não adicione chaves secretas aos arquivos do site nem ao repositório.
+
+### Ativar pedidos de código por e-mail
+
+O site envia o convite ao organizador usando o Resend:
+
+1. Crie uma conta no [Resend](https://resend.com/) e verifique um domínio que você controla. O remetente precisa usar esse domínio.
+2. No Supabase, abra **Edge Functions → Secrets** e salve `RESEND_API_KEY` com a chave do Resend e `EMAIL_FROM` com o remetente verificado, por exemplo `Amigo Secreto <convites@seu-dominio.com>`.
+3. Entre no painel do site como administrador e salve seu endereço no cartão **E-mail para pedidos de código**.
+4. Publique o site atualizado no host e teste com um nome ainda não cadastrado.
+
+A chave do Resend deve ficar apenas nos segredos do Supabase. Não a coloque em `config.js`, HTML, JavaScript do site nem no repositório. O Supabase disponibiliza segredos às Edge Functions sem gravá-los no código.
 
 ## Publicar o site
 
@@ -61,7 +77,7 @@ Para desenvolvimento local, abra a pasta em VS Code e use Live Server (não abra
 
 ## Banco de dados
 
-Em um projeto Supabase novo, execute `supabase/schema.sql` no SQL Editor antes de publicar as funções e insira a família/evento inicial. No projeto já conectado, as tabelas e políticas correspondem ao schema atual; não execute novamente o arquivo como uma migração. O histórico remoto de migrações estava vazio: o schema de referência está neste arquivo, e os ajustes de segurança foram aplicados diretamente pelo conector Supabase. O SQL de bootstrap para a família/evento é:
+Em um projeto Supabase novo, execute `supabase/schema.sql` no SQL Editor antes de publicar as funções e insira a família/evento inicial. No projeto conectado, a migração `participant_profiles_and_code_requests` foi aplicada com os campos do perfil, o e-mail do organizador e o limite de solicitações. O SQL de bootstrap para a família/evento é:
 
 ```sql
 insert into public.familias (nome)
@@ -75,6 +91,6 @@ where nome = 'Família Senhorinha'
   and not exists (select 1 from public.sorteios s where s.familia_id = familias.id);
 ```
 
-O painel usa a sessão Supabase Auth do organizador. Antes de usar com dados reais, cadastre o usuário em `public.admins`, publique as cinco funções e confira um ciclo completo com participantes fictícios.
+O painel usa a sessão Supabase Auth do organizador. Antes de usar com dados reais, cadastre o usuário em `public.admins`, aplique o schema/migração, publique as funções e configure o envio de e-mail.
 
 Se a instalação usar outro projeto Supabase, depois de criar a família e o evento, consulte o UUID da família com `select id from public.familias where nome = 'Família Senhorinha';` e atualize a constante `FAMILY_ID` no início de `app.js`. `config.js` continua contendo apenas `url` e `anonKey`.

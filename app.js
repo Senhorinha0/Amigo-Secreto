@@ -6,6 +6,9 @@ let participantToken = sessionStorage.getItem("participant_token") || null;
 let currentParticipant = null;
 let activeEvent = null;
 let participantCache = [];
+let participantPolling = null;
+let participantReloading = false;
+let participantHasSecret = false;
 
 const $ = (id) => document.getElementById(id);
 function showModal(id) { $(id).classList.add("active"); $(id).setAttribute("aria-hidden", "false"); }
@@ -16,6 +19,7 @@ $("participantOpen").onclick = () => showModal("participantModal");
 $("heroInvite").onclick = () => showModal("participantModal");
 $("adminOpen").onclick = () => showModal("adminModal");
 $("participantForm").addEventListener("submit", participantLogin);
+$("requestCodeForm").addEventListener("submit", requestParticipantCode);
 $("adminForm").addEventListener("submit", adminLogin);
 $("forgotPassword").addEventListener("click", requestPasswordReset);
 $("passwordResetForm").addEventListener("submit", saveNewPassword);
@@ -24,6 +28,9 @@ $("addParticipantForm").addEventListener("submit", addParticipant);
 $("drawButton").addEventListener("click", drawSecret);
 $("logout").addEventListener("click", logout);
 $("addWishForm").addEventListener("submit", saveWish);
+$("profileForm").addEventListener("submit", saveParticipantProfile);
+$("editProfile").addEventListener("click", () => showModal("profileModal"));
+$("emailSettingsForm").addEventListener("submit", saveNotificationEmail);
 $("restrictionForm").addEventListener("submit", addRestriction);
 $("copyCode").addEventListener("click", async () => { await navigator.clipboard.writeText($("generatedCode").textContent); $("copyCode").textContent = "Copiado!"; });
 
@@ -75,21 +82,114 @@ async function participantLogin(event) {
   } catch (error) { $("participantNotice").textContent = error.message || "Não foi possível validar o código."; }
 }
 
-async function loadParticipantArea() {
-  if (!participantToken) return;
-  const { data, error } = await client.functions.invoke("participant-me", callOptions());
+async function requestParticipantCode(event) {
+  event.preventDefault();
+  if (!requireConfig("requestCodeNotice")) return;
+  const name = $("requestParticipantName").value.trim();
+  $("requestCodeNotice").textContent = "Enviando pedido ao organizador...";
+  const { data, error } = await client.functions.invoke("request-participant-code", { body: { nome: name, family_id: FAMILY_ID } });
+  if (error || data?.error) {
+    let message = data?.error;
+    if (!message && error?.context && typeof error.context.json === "function") {
+      const response = error.context.clone ? error.context.clone() : error.context;
+      message = (await response.json().catch(() => null))?.error;
+    }
+    $("requestCodeNotice").textContent = message || "Não foi possível enviar o pedido. Tente novamente mais tarde.";
+    return;
+  }
+  $("requestCodeForm").reset();
+  $("requestCodeNotice").textContent = data?.message || "Pedido enviado. Peça ao organizador que compartilhe seu código de acesso.";
+}
+
+async function loadParticipantArea({ silent = false } = {}) {
+  if (!participantToken || participantReloading) return;
+  participantReloading = true;
+  let result;
+  try { result = await client.functions.invoke("participant-me", callOptions()); }
+  catch (loadError) {
+    participantReloading = false;
+    if (!silent) alert("Não foi possível carregar sua área. Confira sua conexão e tente novamente.");
+    return;
+  }
+  participantReloading = false;
+  const { data, error } = result;
   if (error || !data) {
+    if (silent) return;
     sessionStorage.removeItem("participant_token"); participantToken = null; currentParticipant = null;
     alert("Sua sessão expirou. Entre novamente."); return;
   }
   currentParticipant = data.participant;
-  $("resultName").textContent = data.secret_name || "O sorteio ainda não foi realizado.";
+  const profile = data.profile || {};
+  $("clothingSize").value = profile.tamanho_roupa || "";
+  $("shoeSize").value = profile.numero_calcado || "";
+  $("wantedGifts").value = profile.presentes_queridos || "";
+  $("unwantedGifts").value = profile.presentes_nao_queridos || "";
+  $("profileNotice").textContent = "";
+  const profileComplete = Boolean(profile.tamanho_roupa && profile.numero_calcado && profile.presentes_queridos);
+  const secret = data.secret;
+  $("secretCard").hidden = !secret;
+  $("drawWaiting").hidden = Boolean(secret);
+  $("secretWishesSection").hidden = !secret;
+  $("resultSubtitle").textContent = secret
+    ? "Guarde o segredo! Veja as informações de quem você tirou."
+    : "Seu perfil foi salvo. O resultado aparecerá aqui quando o organizador realizar o sorteio.";
+  $("drawWaiting").textContent = "Ainda não há resultado. Assim que o organizador fizer o sorteio, o nome aparecerá aqui.";
+  if (secret) {
+    $("secretName").textContent = secret.nome;
+    $("secretAvatar").textContent = (secret.nome || "?").trim().charAt(0).toLocaleUpperCase("pt-BR");
+    $("secretEvent").textContent = data.event_name || "Amigo Secreto da Família Senhorinha";
+    const min = data.event_minimum == null ? null : Number(data.event_minimum);
+    const max = data.event_maximum == null ? null : Number(data.event_maximum);
+    $("secretBudget").textContent = max == null ? "A combinar" : `R$ ${max.toFixed(0)}`;
+    $("secretClothing").textContent = secret.tamanho_roupa || "Não informou";
+    $("secretShoes").textContent = secret.numero_calcado || "Não informou";
+    const tags = (secret.presentes_queridos || "").split(/[\n,;]+/).map((item) => item.trim()).filter(Boolean);
+    $("secretGifts").replaceChildren();
+    tags.forEach((gift) => { const tag = document.createElement("span"); tag.textContent = gift; $("secretGifts").append(tag); });
+    $("secretAvoid").hidden = !secret.presentes_nao_queridos;
+    $("secretAvoid").textContent = secret.presentes_nao_queridos ? `Não quer ganhar: ${secret.presentes_nao_queridos}` : "";
+  }
   renderWishes($("wishList"), data.wishes || [], false);
   renderWishes($("myWishList"), data.my_wishes || [], data.event_status === "rascunho");
   $("wishLimit").textContent = `${(data.my_wishes || []).length} de ${data.max_wishes} sugestões`;
   $("addWishForm").hidden = data.event_status !== "rascunho";
   $("wishLimit").textContent += data.event_status === "rascunho" ? " · você pode editar até o sorteio" : " · lista bloqueada após o sorteio";
+  if (!profileComplete) {
+    hideModal($("resultModal"));
+    showModal("profileModal");
+    if (participantPolling) { clearInterval(participantPolling); participantPolling = null; }
+    return;
+  }
+  if (silent) {
+    if (secret && !participantHasSecret) showModal("resultModal");
+    participantHasSecret = Boolean(secret);
+    return;
+  }
+  hideModal($("profileModal"));
   showModal("resultModal");
+  participantHasSecret = Boolean(secret);
+  if (!participantPolling) participantPolling = setInterval(() => {
+    if (document.visibilityState === "visible") loadParticipantArea({ silent: true });
+  }, 20000);
+}
+
+async function saveParticipantProfile(event) {
+  event.preventDefault();
+  if (!participantToken) return;
+  const profile = {
+    tamanho_roupa: $("clothingSize").value.trim(),
+    numero_calcado: $("shoeSize").value.trim(),
+    presentes_queridos: $("wantedGifts").value.trim(),
+    presentes_nao_queridos: $("unwantedGifts").value.trim()
+  };
+  if (!profile.tamanho_roupa || !profile.numero_calcado || !profile.presentes_queridos) {
+    $("profileNotice").textContent = "Preencha roupa, calçado e os presentes que gostaria de ganhar. A lista do que não quer ganhar é opcional.";
+    return;
+  }
+  $("profileNotice").textContent = "Salvando seu perfil...";
+  const { data, error } = await client.functions.invoke("participant-profile", { body: { ...callOptions().body, profile } });
+  if (error || data?.error) { $("profileNotice").textContent = data?.error || "Não foi possível salvar seu perfil."; return; }
+  await loadParticipantArea();
 }
 
 function renderWishes(container, wishes, editable) {
@@ -141,6 +241,8 @@ async function logout() { if (client) await client.auth.signOut(); $("dashboard"
 async function refreshDashboard() {
   if (!client) return;
   const familyId = FAMILY_ID;
+  const { data: family } = await client.from("familias").select("email_notificacao").eq("id", familyId).maybeSingle();
+  $("notificationEmail").value = family?.email_notificacao || "";
   const { data: event, error: eventError } = await client.from("sorteios").select("*").eq("familia_id", familyId).order("created_at", { ascending: false }).limit(1).maybeSingle();
   if (eventError) { $("dashboardNotice").textContent = "Não foi possível carregar o evento. Verifique a autorização administrativa."; return; }
   if (event) {
@@ -206,6 +308,13 @@ async function saveEvent(event) {
   const payload = { nome: $("eventName").value.trim(), data_evento: $("eventDate").value || null, valor_minimo: minimum, valor_maximo: maximum, regras: $("eventRules").value.trim() || null };
   const { error } = await client.from("sorteios").update(payload).eq("id", existing.id).eq("familia_id", FAMILY_ID);
   $("dashboardNotice").textContent = error ? "Não foi possível salvar as configurações." : "Configurações salvas."; await refreshDashboard();
+}
+
+async function saveNotificationEmail(event) {
+  event.preventDefault();
+  const email = $("notificationEmail").value.trim().toLowerCase();
+  const { error } = await client.from("familias").update({ email_notificacao: email }).eq("id", FAMILY_ID);
+  $("emailSettingsNotice").textContent = error ? "Não foi possível salvar o e-mail. Confirme que você entrou como organizador." : "E-mail salvo. Os pedidos de código serão enviados para este endereço.";
 }
 
 async function addParticipant(event) {
