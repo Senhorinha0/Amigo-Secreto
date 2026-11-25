@@ -14,6 +14,8 @@ Site estático em HTML, CSS e JavaScript, com Supabase Auth, Postgres e Edge Fun
 - O familiar pode solicitar um código pelo nome. O código é enviado ao e-mail do organizador para ele repassar; esse envio depende da configuração do Resend abaixo.
 - O painel permite configurar o evento, gerenciar participantes, definir restrições e sortear uma vez.
 - Depois de um sorteio, o organizador pode anulá-lo no painel. Isso apaga os pares e reabre o evento, preservando participantes, perfis e listas de presentes.
+- Cada evento funciona como uma sala anual, com código próprio, organizador, data, orçamento e lista de familiares. Os familiares existentes não são apagados; ao entrar com o novo código, são associados à nova sala.
+- Depois de entrar com o código pessoal, o familiar fica na tela da sala, com os detalhes, a lista de participantes e a mensagem de espera até o sorteio.
 
 ## Ativar o primeiro administrador
 
@@ -42,6 +44,7 @@ Todas as funções usam `@supabase/server` para verificar a autenticação dentr
 ```sh
 supabase functions deploy participant-access --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
 supabase functions deploy participant-me --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
+supabase functions deploy participant-join-room --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
 supabase functions deploy participant-wishes --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
 supabase functions deploy participant-profile --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
 supabase functions deploy request-participant-code --no-verify-jwt --project-ref kiepppjaomqffxqwmxvk --yes
@@ -80,6 +83,8 @@ Para desenvolvimento local, abra a pasta em VS Code e use Live Server (não abra
 ## Banco de dados
 
 Em um projeto Supabase novo, execute `supabase/schema.sql` no SQL Editor antes de publicar as funções e insira a família/evento inicial. No projeto conectado, a migração `participant_profiles_and_code_requests` foi aplicada com os campos do perfil, o e-mail do organizador e o limite de solicitações. O SQL de bootstrap para a família/evento é:
+
+Para este banco que já tem participantes, execute também `supabase/rooms-migration.sql` no SQL Editor antes de publicar as funções. Ela cria a sala do evento atual e gera um código, sem apagar cadastros, perfis, listas ou resultados. O comando da Edge Function `participant-join-room` também deve ser implantado; `admin-draw` foi atualizado para sortear apenas as pessoas que entraram na sala.
 
 ```sql
 insert into public.familias (nome)

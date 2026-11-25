@@ -14,6 +14,7 @@ let participantCache = [];
 let participantPolling = null;
 let participantReloading = false;
 let participantHasSecret = false;
+let currentRoom = null;
 
 const $ = (id) => document.getElementById(id);
 function showAccountProfile(name, role, count) {
@@ -31,7 +32,7 @@ function hideAccountProfile() {
 function showModal(id) { $(id).classList.add("active"); $(id).setAttribute("aria-hidden", "false"); }
 function hideModal(el) { const modal = el.closest(".modal-backdrop"); if (modal) { modal.classList.remove("active"); modal.setAttribute("aria-hidden", "true"); } }
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => hideModal(button)));
-document.querySelectorAll(".modal-backdrop").forEach((modal) => modal.addEventListener("click", (event) => { if (event.target === modal) hideModal(modal); }));
+document.querySelectorAll(".modal-backdrop").forEach((modal) => modal.addEventListener("click", (event) => { if (event.target === modal && modal.id !== "resultModal") hideModal(modal); }));
 $("participantOpen").onclick = () => showModal("participantModal");
 $("heroInvite").onclick = () => showModal("participantModal");
 $("adminOpen").onclick = () => showModal("adminModal");
@@ -41,6 +42,9 @@ $("adminForm").addEventListener("submit", adminLogin);
 $("forgotPassword").addEventListener("click", requestPasswordReset);
 $("passwordResetForm").addEventListener("submit", saveNewPassword);
 $("eventForm").addEventListener("submit", saveEvent);
+$("createRoomForm").addEventListener("submit", createRoom);
+$("roomJoinForm").addEventListener("submit", (event) => joinRoom(event, "roomCodeInput", "roomJoinNotice"));
+$("switchRoomForm").addEventListener("submit", (event) => joinRoom(event, "switchRoomCode", "switchRoomNotice"));
 $("addParticipantForm").addEventListener("submit", addParticipant);
 $("drawButton").addEventListener("click", drawSecret);
 $("resetDrawButton").addEventListener("click", resetDraw);
@@ -52,12 +56,29 @@ $("editProfile").addEventListener("click", () => showModal("profileModal"));
 $("emailSettingsForm").addEventListener("submit", saveNotificationEmail);
 $("restrictionForm").addEventListener("submit", addRestriction);
 $("copyCode").addEventListener("click", async () => { await navigator.clipboard.writeText($("generatedCode").textContent); $("copyCode").textContent = "Copiado!"; });
+$("copyRoomCode").addEventListener("click", async () => { if (activeEvent?.codigo_sala) { await navigator.clipboard.writeText(activeEvent.codigo_sala); $("copyRoomCode").textContent = "Copiado!"; } });
+$("memberLogout").addEventListener("click", logout);
 
 function requireConfig(target) {
   if (!client) { $(target).textContent = "Configure a URL, chave pública e ID da família em config.js."; return false; }
   return true;
 }
 function callOptions(token = participantToken) { return { body: { token, family_id: FAMILY_ID } }; }
+function makeRoomCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  const value = [...bytes].map((byte) => alphabet[byte % alphabet.length]).join("");
+  return `SENH-${value.slice(0, 4)}-${value.slice(4)}`;
+}
+async function getFunctionError(error, data, fallback) {
+  if (data?.error) return data.error;
+  if (error?.context && typeof error.context.json === "function") {
+    const response = error.context.clone ? error.context.clone() : error.context;
+    const body = await response.json().catch(() => null);
+    if (body?.error) return body.error;
+  }
+  return error?.message || fallback;
+}
 
 if (client) {
   client.auth.onAuthStateChange((event) => {
@@ -102,6 +123,45 @@ async function participantLogin(event) {
   } catch (error) { $("participantNotice").textContent = error.message || "Não foi possível validar o código."; }
 }
 
+async function joinRoom(event, inputId, noticeId) {
+  event.preventDefault();
+  if (!requireConfig(noticeId)) return;
+  const roomCode = $(inputId).value.trim().toUpperCase();
+  $(noticeId).textContent = "Verificando o código da sala...";
+  const { data, error } = await client.functions.invoke("participant-join-room", { body: { ...callOptions().body, room_code: roomCode } });
+  if (error || data?.error) { $(noticeId).textContent = await getFunctionError(error, data, "Não foi possível entrar na sala."); return; }
+  $(noticeId).textContent = "Entrou na sala! Carregando a lista de familiares...";
+  $(inputId).value = "";
+  await loadParticipantArea();
+}
+
+async function createRoom(event) {
+  event.preventDefault();
+  if (!requireConfig("roomCreateNotice")) return;
+  const minimum = Number($("newRoomMin").value || 0);
+  const maximum = Number($("newRoomMax").value || 0);
+  if (maximum < minimum) { $("roomCreateNotice").textContent = "O valor máximo não pode ser menor que o mínimo."; return; }
+  const roomCode = makeRoomCode();
+  const payload = {
+    familia_id: FAMILY_ID,
+    nome: $("newRoomName").value.trim(),
+    data_evento: $("newRoomDate").value || null,
+    valor_minimo: minimum,
+    valor_maximo: maximum,
+    regras: $("newRoomRules").value.trim() || null,
+    organizador_nome: $("newRoomOrganizer").value.trim(),
+    codigo_sala: roomCode,
+    status: "rascunho"
+  };
+  $("roomCreateNotice").textContent = "Criando sala...";
+  const { data, error } = await client.from("sorteios").insert(payload).select("id").single();
+  if (error || !data) { $("roomCreateNotice").textContent = "Não foi possível criar a sala. Atualize o banco com rooms-migration.sql e confira se entrou como administrador."; return; }
+  $("roomCreateNotice").textContent = `Sala criada! Código para enviar aos familiares: ${roomCode}`;
+  $("newRoomName").value = "Amigo Secreto da Família Senhorinha";
+  $("newRoomDate").value = ""; $("newRoomRules").value = "";
+  await refreshDashboard();
+}
+
 async function requestParticipantCode(event) {
   event.preventDefault();
   if (!requireConfig("requestCodeNotice")) return;
@@ -142,6 +202,31 @@ async function loadParticipantArea({ silent = false } = {}) {
   currentParticipant = data.participant;
   const drawCount = Number(data.draw_count) || 0;
   showAccountProfile(data.participant?.name, "Familiar", `Participou de ${drawCount} ${drawCount === 1 ? "sorteio" : "sorteios"}`);
+  if (!data.has_room) {
+    currentRoom = null;
+    $("roomJoinPanel").hidden = false;
+    $("roomContent").hidden = true;
+    $("roomJoinNotice").textContent = "";
+    showModal("resultModal");
+    return;
+  }
+  currentRoom = data.room;
+  $("roomJoinPanel").hidden = true;
+  $("roomContent").hidden = false;
+  $("roomName").textContent = currentRoom.name || "Amigo Secreto da Família Senhorinha";
+  $("roomOrganizer").textContent = currentRoom.organizer || "Organizador da família";
+  $("roomDate").textContent = currentRoom.date ? new Date(`${currentRoom.date}T12:00:00`).toLocaleDateString("pt-BR") : "A combinar";
+  const roomMin = currentRoom.minimum == null ? null : Number(currentRoom.minimum);
+  const roomMax = currentRoom.maximum == null ? null : Number(currentRoom.maximum);
+  $("roomBudget").textContent = roomMin == null && roomMax == null ? "A combinar" : roomMin == null ? `Até R$ ${roomMax.toFixed(2)}` : roomMax == null ? `A partir de R$ ${roomMin.toFixed(2)}` : roomMin === roomMax ? `R$ ${roomMax.toFixed(2)}` : `R$ ${roomMin.toFixed(2)} a R$ ${roomMax.toFixed(2)}`;
+  $("roomRules").textContent = currentRoom.rules || "O organizador ainda não adicionou informações extras.";
+  const roster = data.roster || [];
+  $("roomMemberCount").textContent = `(${roster.length})`;
+  $("roomRoster").replaceChildren();
+  roster.forEach((person) => { const item = document.createElement("li"); item.textContent = person.nome; $("roomRoster").append(item); });
+  $("memberWaitingMessage").textContent = currentRoom.status === "sorteado"
+    ? "O sorteio foi realizado. Confira abaixo quem você tirou e os detalhes do presente."
+    : "Sorteio não realizado, por gentileza espere algum tempinho.";
   const profile = data.profile || {};
   $("clothingSize").value = profile.tamanho_roupa || "";
   $("shoeSize").value = profile.numero_calcado || "";
@@ -156,7 +241,7 @@ async function loadParticipantArea({ silent = false } = {}) {
   $("resultSubtitle").textContent = secret
     ? "Guarde o segredo! Veja as informações de quem você tirou."
     : "Seu perfil foi salvo. O resultado aparecerá aqui quando o organizador realizar o sorteio.";
-  $("drawWaiting").textContent = "Ainda não há resultado. Assim que o organizador fizer o sorteio, o nome aparecerá aqui.";
+  $("drawWaiting").textContent = currentRoom.status === "sorteado" ? "O sorteio foi realizado, mas não encontramos um resultado para sua conta nesta sala. Fale com o organizador." : "Sorteio não realizado, por gentileza espere algum tempinho.";
   if (secret) {
     $("secretName").textContent = secret.nome;
     $("secretAvatar").textContent = (secret.nome || "?").trim().charAt(0).toLocaleUpperCase("pt-BR");
@@ -178,7 +263,7 @@ async function loadParticipantArea({ silent = false } = {}) {
   $("addWishForm").hidden = data.event_status !== "rascunho";
   $("wishLimit").textContent += data.event_status === "rascunho" ? " · você pode editar até o sorteio" : " · lista bloqueada após o sorteio";
   if (!profileComplete) {
-    hideModal($("resultModal"));
+    showModal($("resultModal"));
     showModal("profileModal");
     if (participantPolling) { clearInterval(participantPolling); participantPolling = null; }
     return;
@@ -262,6 +347,14 @@ async function adminLogin(event) {
 async function showAdminProfile(user) {
   const metadata = user?.user_metadata || {};
   const name = metadata.full_name || metadata.name || metadata.display_name || user?.email?.split("@")[0] || "Organizador";
+  if (!$("eventOrganizerName").value || activeEvent?.organizador_nome === "Organizador da família") {
+    $("eventOrganizerName").value = name;
+    if (activeEvent?.organizador_nome === "Organizador da família") {
+      await client.from("sorteios").update({ organizador_nome: name }).eq("id", activeEvent.id).eq("familia_id", FAMILY_ID);
+      activeEvent.organizador_nome = name;
+    }
+  }
+  if (!$("newRoomOrganizer").value) $("newRoomOrganizer").value = name;
   const { data: events } = await client.from("sorteios").select("execucoes_sorteio").eq("familia_id", FAMILY_ID);
   const total = (events || []).reduce((sum, event) => sum + Number(event.execucoes_sorteio || 0), 0);
   showAccountProfile(name, "Organizador", `${total} ${total === 1 ? "sorteio organizado" : "sorteios organizados"}`);
@@ -287,19 +380,28 @@ async function refreshDashboard() {
   if (event) {
     activeEvent = event;
     $("eventName").value = event.nome; $("eventDate").value = event.data_evento || "";
+    $("eventOrganizerName").value = event.organizador_nome || "";
     $("minValue").value = event.valor_minimo ?? 0; $("maxValue").value = event.valor_maximo ?? 100;
     $("statEvent").textContent = event.nome; $("eventRules").value = event.regras || "";
+    $("currentRoomCode").textContent = event.codigo_sala || "Código ainda não configurado";
+    $("copyRoomCode").disabled = !event.codigo_sala;
+    $("currentRoomDescription").textContent = `${event.nome} · ${event.status === "sorteado" ? "sorteio realizado" : "cadastro aberto"}. Envie este código junto com os convites pessoais.`;
     $("drawButton").disabled = event.status !== "rascunho";
     $("drawButton").hidden = event.status !== "rascunho";
     $("resetDrawButton").hidden = event.status !== "sorteado";
   }
-  const { data: people, error } = await client.from("participantes").select("id,nome,ultimo_acesso,created_at").eq("familia_id", familyId).order("nome");
+  const { data: memberships, error: membershipError } = await client.from("sala_participantes").select("participante_id").eq("sorteio_id", activeEvent?.id || "");
+  if (membershipError) { $("dashboardNotice").textContent = "Não foi possível carregar os familiares desta sala. Execute rooms-migration.sql no Supabase."; return; }
+  const memberIds = (memberships || []).map((entry) => entry.participante_id);
+  const { data: people, error } = memberIds.length
+    ? await client.from("participantes").select("id,nome,ultimo_acesso,created_at").eq("familia_id", familyId).in("id", memberIds).order("nome")
+    : { data: [], error: null };
   if (error) { $("dashboardNotice").textContent = "Não foi possível carregar participantes."; return; }
   $("statParticipants").textContent = people.length; $("statAccessed").textContent = people.filter((person) => person.ultimo_acesso).length;
   participantCache = people;
   await refreshRestrictions();
   $("participantsTable").replaceChildren();
-  if (!people.length) { $("participantsTable").innerHTML = '<p class="muted">Nenhum familiar cadastrado ainda.</p>'; return; }
+  if (!people.length) { $("participantsTable").innerHTML = '<p class="muted">Ninguém entrou nesta sala ainda. Compartilhe o código da sala com os familiares.</p>'; return; }
   const table = document.createElement("table"); table.innerHTML = "<thead><tr><th>Nome</th><th>Acesso</th><th>Ação</th></tr></thead>";
   const body = document.createElement("tbody");
   people.forEach((person) => { const row = document.createElement("tr"); const name = document.createElement("td"); name.textContent = person.nome; const access = document.createElement("td"); access.textContent = person.ultimo_acesso ? "Já acessou" : "Não acessou"; const action = document.createElement("td"); const remove = document.createElement("button"); remove.className = "btn btn-outline"; remove.textContent = "Excluir"; remove.onclick = () => removeParticipant(person.id, person.nome); action.append(remove); row.append(name, access, action); body.append(row); });
@@ -346,7 +448,7 @@ async function saveEvent(event) {
   const { data: existing, error: lookupError } = await client.from("sorteios").select("id,status").eq("familia_id", FAMILY_ID).order("created_at", { ascending: false }).limit(1).maybeSingle();
   if (lookupError || !existing) { $("dashboardNotice").textContent = "Evento não encontrado para esta família."; return; }
   if (existing.status !== "rascunho") { $("dashboardNotice").textContent = "As configurações não podem ser alteradas após o sorteio."; return; }
-  const payload = { nome: $("eventName").value.trim(), data_evento: $("eventDate").value || null, valor_minimo: minimum, valor_maximo: maximum, regras: $("eventRules").value.trim() || null };
+  const payload = { nome: $("eventName").value.trim(), organizador_nome: $("eventOrganizerName").value.trim(), data_evento: $("eventDate").value || null, valor_minimo: minimum, valor_maximo: maximum, regras: $("eventRules").value.trim() || null };
   const { error } = await client.from("sorteios").update(payload).eq("id", existing.id).eq("familia_id", FAMILY_ID);
   $("dashboardNotice").textContent = error ? "Não foi possível salvar as configurações." : "Configurações salvas."; await refreshDashboard();
 }
